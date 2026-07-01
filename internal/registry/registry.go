@@ -1,0 +1,128 @@
+package registry
+
+import (
+	"sync"
+	"time"
+)
+
+// WorkerState is the failure-detector's view of a worker.
+// M1 only ever uses StateAlive. M2's FailureDetector drives the
+// Suspect/Dead transitions. Defining it now keeps the registry's
+// shape stable so M2 mounts on without surgery.
+type WorkerState int
+
+const (
+	StateAlive WorkerState = iota
+	StateSuspect
+	StateDead
+)
+
+// WorkerInfo is the control plane's *domain* model of a worker.
+// Deliberately separate from the gRPC wire types (the generated
+// inferencev1.* structs): the wire model crosses the network; the
+// domain model is what we own and reason about. Keeping them apart
+// means a proto change doesn't ripple into our core logic.
+//
+// NOTE: every field here is a value type (string, int, float64,
+// time.Time). That's what makes the value-copy in ListWorkers a
+// fully detached snapshot. If you ever add a slice/map/pointer
+// field, the copy becomes shallow and the aliasing problem is back.
+type WorkerInfo struct {
+	ID       string
+	Addr     string // host:port the router/data plane dials
+	State    WorkerState
+	Load     float64   // updated by heartbeats in M2
+	LastSeen time.Time // updated by heartbeats in M2
+}
+
+// WorkerRegistry is the control plane's source of truth for which
+// workers exist. M2's failure detection, router, and membership
+// view all read from here — which is exactly why the locking has
+// to be airtight from day one.
+type WorkerRegistry struct {
+	mu      sync.Mutex
+	workers map[string]*WorkerInfo
+}
+
+func NewWorkerRegistry() *WorkerRegistry {
+	return &WorkerRegistry{
+		workers: make(map[string]*WorkerInfo),
+	}
+}
+
+// Register adds or updates a worker. M1 decision: upsert —
+// re-registering an existing ID overwrites it.
+//
+// TODO(M2): upsert silently resets failure-detection state. A
+// SUSPECT worker that re-registers — treat as revived, or keep
+// suspecting? Revisit when FailureDetector lands.
+func (r *WorkerRegistry) Register(id, addr string) {
+	// TODO(M1): validate id/addr (non-empty, addr parseable).
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.workers[id] = &WorkerInfo{
+		ID:       id,
+		Addr:     addr,
+		State:    StateAlive,
+		LastSeen: time.Now(),
+	}
+}
+
+// Deregister removes a worker. M2's failure detector calls this
+// when a worker is judged DEAD; M1 just has it for symmetry.
+func (r *WorkerRegistry) Deregister(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.workers, id)
+}
+
+// UpdateLoad records a heartbeat's reported load + freshness.
+// M2's heartbeat handler calls this. It mutates the WorkerInfo
+// IN PLACE while holding the lock — which is *exactly* why
+// ListWorkers must not leak the pointer: this in-lock write and
+// an out-of-lock read of the same object would be a data race.
+func (r *WorkerRegistry) UpdateLoad(id string, load float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if w, ok := r.workers[id]; ok {
+		w.Load = load
+		w.LastSeen = time.Now()
+	}
+	// id not found: worker was deregistered between heartbeats.
+	// M2 decides whether a stray heartbeat should re-register.
+}
+
+// ListWorkers returns a snapshot of all workers.
+//
+// THE KEY DECISION: returns []WorkerInfo (values), NOT
+// []*WorkerInfo (pointers). Reason #2 is the one that bites:
+//
+//  1. The mutex protects the *map structure* (which keys exist).
+//     It does NOT protect the WorkerInfo objects behind the
+//     pointers.
+//  2. If we handed out *WorkerInfo, the caller would read those
+//     fields OUTSIDE our lock — while an M2 heartbeat (UpdateLoad)
+//     is INSIDE the lock writing the same object. The mutex can't
+//     see that race: the pointer escaped the lock's boundary.
+//
+// Value copies make the snapshot fully detached. Cost is one copy
+// per worker — negligible at our scale. When scale grows this
+// evolves into copy-on-write (immutable snapshot + atomic pointer
+// swap, zero-lock reads) — the MembershipView in M2.
+//
+// Caveat: map iteration order is randomized, so the returned slice
+// is unordered. Don't rely on order in the router.
+func (r *WorkerRegistry) ListWorkers() []WorkerInfo {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	out := make([]WorkerInfo, 0, len(r.workers))
+	for _, w := range r.workers {
+		out = append(out, *w) // *w dereferences the pointer: copy by value
+	}
+	return out
+}

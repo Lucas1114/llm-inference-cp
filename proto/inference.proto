@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package inference.v1;
+
+// IMPORTANT: set this to YOUR module path BEFORE generating code.
+// Changing it later forces a regen and fixing every import — do it now.
+// Format: "<go-module-path>/<output-dir>;<go-package-name>"
+option go_package = "github.com/lucas1114/llm-inference-cp/gen/inference/v1;inferencev1";
+
+// ─────────────────────────────────────────────────────────────
+// Data plane: the actual inference request / response.
+// ─────────────────────────────────────────────────────────────
+
+// InferenceRequest is the unit of work. request_id is the idempotency key:
+// it travels with the request from the first hop so a reroute or retry can
+// be deduplicated at the worker. at-least-once delivery + idempotent worker
+// = effectively-once.
+message InferenceRequest {
+  // Client-supplied for client-side retry safety; minted by the gateway if
+  // the client leaves it empty. NEVER regenerated on reroute.
+  string request_id = 1;
+  string prompt = 2;     // M1: opaque text. Real tokenization comes later.
+  uint32 max_tokens = 3;
+}
+
+message InferenceResponse {
+  string request_id = 1; // echoed back for correlation / dedup.
+  string output = 2;
+  string worker_id = 3;  // which worker served it (observability).
+}
+
+// InferenceService is implemented by BOTH the gateway and the worker:
+//   - gateway: Generate() picks a healthy worker and forwards.
+//   - worker:  Generate() runs (mock) inference and returns.
+// The client calls the gateway; the gateway calls a worker.
+service InferenceService {
+  rpc Generate(InferenceRequest) returns (InferenceResponse);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Control plane: worker registration, liveness, membership.
+// ─────────────────────────────────────────────────────────────
+
+// WorkerLoad is reported on every heartbeat. M1 only needs liveness; these
+// fields feed least-outstanding / KV-cache-aware scheduling (M4).
+message WorkerLoad {
+  uint32 active_requests = 1; // in-flight count.
+  // KV-cache utilization, queue depth, etc. grow here later.
+}
+
+message RegisterRequest {
+  string worker_id = 1; // self-assigned (UUID) at worker startup.
+  string address = 2;   // host:port the gateway dials for Generate.
+  uint32 capacity = 3;  // max concurrent requests (admission control later).
+}
+
+message RegisterResponse {
+  // Control plane dictates the heartbeat cadence centrally so the failure
+  // detector's expectations and the worker's behavior stay in agreement.
+  int64 heartbeat_interval_ms = 1;
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+  WorkerLoad load = 2;
+}
+
+message HeartbeatResponse {}
+
+// WorkerInfo is what the gateway needs to route. In M2 this gains a status
+// field (ALIVE / SUSPECT / DEAD) driven by the failure detector.
+message WorkerInfo {
+  string worker_id = 1;
+  string address = 2;
+}
+
+message ListWorkersRequest {}
+
+message ListWorkersResponse {
+  repeated WorkerInfo workers = 1;
+}
+
+// ControlPlane is implemented by the control plane only.
+//   - Register / Heartbeat: called by workers.
+//   - ListWorkers:          called by the gateway to learn who to route to.
+// M1 wires up Register + ListWorkers (poll). Heartbeat is defined now but
+// only exercised in M2, where phi-accrual consumes its arrival timing.
+service ControlPlane {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse);
+}
