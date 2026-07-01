@@ -31,6 +31,7 @@ type WorkerInfo struct {
 	ID       string
 	Addr     string // host:port the router/data plane dials
 	State    WorkerState
+	Capacity uint32    // max concurrent requests; set at Register, used by M4 admission control
 	Load     float64   // updated by heartbeats in M2
 	LastSeen time.Time // updated by heartbeats in M2
 }
@@ -56,7 +57,7 @@ func NewWorkerRegistry() *WorkerRegistry {
 // TODO(M2): upsert silently resets failure-detection state. A
 // SUSPECT worker that re-registers — treat as revived, or keep
 // suspecting? Revisit when FailureDetector lands.
-func (r *WorkerRegistry) Register(id, addr string) {
+func (r *WorkerRegistry) Register(id, addr string, capacity uint32) {
 	// TODO(M1): validate id/addr (non-empty, addr parseable).
 
 	r.mu.Lock()
@@ -66,6 +67,7 @@ func (r *WorkerRegistry) Register(id, addr string) {
 		ID:       id,
 		Addr:     addr,
 		State:    StateAlive,
+		Capacity: capacity,
 		LastSeen: time.Now(),
 	}
 }

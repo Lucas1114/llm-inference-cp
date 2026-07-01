@@ -8,7 +8,7 @@ import (
 
 func TestRegisterAndList(t *testing.T) {
 	r := NewWorkerRegistry()
-	r.Register("w1", "localhost:5001")
+	r.Register("w1", "localhost:5001", 0)
 	r.Register("w2", "localhost:5002")
 
 	if got := r.ListWorkers(); len(got) != 2 {
@@ -19,7 +19,7 @@ func TestRegisterAndList(t *testing.T) {
 // Upsert: re-registering the same id overwrites, not duplicates.
 func TestRegisterUpsert(t *testing.T) {
 	r := NewWorkerRegistry()
-	r.Register("w1", "localhost:5001")
+	r.Register("w1", "localhost:5001", 0)
 	r.Register("w1", "localhost:9999") // same id, new addr
 
 	got := r.ListWorkers()
