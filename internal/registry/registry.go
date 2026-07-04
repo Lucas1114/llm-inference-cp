@@ -81,21 +81,30 @@ func (r *WorkerRegistry) Deregister(id string) {
 	delete(r.workers, id)
 }
 
-// UpdateLoad records a heartbeat's reported load + freshness.
-// M2's heartbeat handler calls this. It mutates the WorkerInfo
-// IN PLACE while holding the lock — which is *exactly* why
-// ListWorkers must not leak the pointer: this in-lock write and
-// an out-of-lock read of the same object would be a data race.
-func (r *WorkerRegistry) UpdateLoad(id string, load float64) {
+// Heartbeat records a worker's periodic liveness signal: it updates the
+// reported load AND stamps LastSeen in a SINGLE critical section, so a
+// reader can never observe load updated but freshness stale (or vice
+// versa). LastSeen is stamped here with the server's clock (time.Now at
+// receipt) — NOT a worker-sent timestamp — because M2's phi-accrual
+// reasons about arrival timing on one consistent monotonic clock.
+//
+// This in-lock, in-place mutation is *exactly* why ListWorkers must not
+// leak the *WorkerInfo pointer: this write and an out-of-lock read of the
+// same object would be a data race the mutex can't see.
+//
+// Returns false when id is unknown (worker deregistered between beats, or
+// a stray beat after graceful shutdown). The caller (server adapter) maps
+// false → codes.NotFound; the worker does NOT get silently re-registered.
+func (r *WorkerRegistry) Heartbeat(id string, load float64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if w, ok := r.workers[id]; ok {
 		w.Load = load
 		w.LastSeen = time.Now()
+		return true
 	}
-	// id not found: worker was deregistered between heartbeats.
-	// M2 decides whether a stray heartbeat should re-register.
+	return false
 }
 
 // ListWorkers returns a snapshot of all workers.
