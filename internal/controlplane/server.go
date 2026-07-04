@@ -75,4 +75,3 @@ func (s *Server) ListWorkers(
 // Heartbeat is defined by the proto but only exercised in M2 (phi-accrual
 // consumes arrival timing). Left unimplemented on purpose — the embedded
 // UnimplementedControlPlaneServer supplies a stub so this compiles today.
-// M2 wires this to reg.UpdateLoad + the failure detector.

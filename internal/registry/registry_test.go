@@ -48,7 +48,7 @@ func TestConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			id := fmt.Sprintf("w%d", i)
 			r.Register(id, "localhost:5000")
-			r.UpdateLoad(id, float64(i)) // in-lock writer
+			r.Heartbeat(id, float64(i)) // in-lock writer
 			_ = r.ListWorkers()          // snapshot reader
 		}(i)
 	}
