@@ -5,4 +5,8 @@
 *.exe
 *.test
 *.out
-/bin/
+/bin
+
+# Local scratch — experiment logs, raw notes. Never shipped.
+notes/
+

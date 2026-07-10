@@ -32,8 +32,8 @@ type WorkerInfo struct {
 	Addr     string // host:port the router/data plane dials
 	State    WorkerState
 	Capacity uint32    // max concurrent requests; set at Register, used by M4 admission control
-	Load     float64   // updated by heartbeats in M2
-	LastSeen time.Time // updated by heartbeats in M2
+	Load     float64   // updated by heartbeats
+	LastSeen time.Time // stamped by Register AND by every heartbeat (server clock)
 }
 
 // WorkerRegistry is the control plane's source of truth for which
@@ -116,7 +116,7 @@ func (r *WorkerRegistry) Heartbeat(id string, load float64) bool {
 //     It does NOT protect the WorkerInfo objects behind the
 //     pointers.
 //  2. If we handed out *WorkerInfo, the caller would read those
-//     fields OUTSIDE our lock — while an M2 heartbeat (UpdateLoad)
+//     fields OUTSIDE our lock — while a concurrent Heartbeat call
 //     is INSIDE the lock writing the same object. The mutex can't
 //     see that race: the pointer escaped the lock's boundary.
 //
