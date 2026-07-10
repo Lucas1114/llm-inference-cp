@@ -6,6 +6,8 @@ import (
 
 	inferencev1 "github.com/lucas1114/llm-inference-cp/gen/inference/v1"
 	"github.com/lucas1114/llm-inference-cp/internal/registry"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // heartbeatIntervalMs is the cadence the control plane DICTATES to every
@@ -72,6 +74,27 @@ func (s *Server) ListWorkers(
 	return &inferencev1.ListWorkersResponse{Workers: out}, nil
 }
 
-// Heartbeat is defined by the proto but only exercised in M2 (phi-accrual
-// consumes arrival timing). Left unimplemented on purpose — the embedded
-// UnimplementedControlPlaneServer supplies a stub so this compiles today.
+// Heartbeat: a worker calls this every heartbeatIntervalMs to prove liveness.
+//
+// The registry stamps LastSeen with the SERVER's clock at this moment — not a
+// timestamp sent by the worker — so phi-accrual reasons about arrival times on
+// a single monotonic clock and never has to trust cross-machine wall clocks.
+//
+// An unknown worker_id is NOT silently upserted: it means the control plane
+// restarted and lost its registry, so we tell the worker NotFound and let it
+// re-register itself. Self-healing beats silent state divergence.
+func (s *Server) Heartbeat(
+	ctx context.Context,
+	req *inferencev1.HeartbeatRequest,
+) (*inferencev1.HeartbeatResponse, error) {
+	// TODO(M4): `load` is the raw in-flight count today. Scheduling will likely
+	// want a richer signal (KV-cache occupancy, queue depth) — revisit then.
+	load := float64(req.GetLoad().GetActiveRequests())
+
+	if found := s.reg.Heartbeat(req.GetWorkerId(), load); !found {
+		return nil, status.Errorf(codes.NotFound,
+			"unknown worker_id %q; re-register", req.GetWorkerId())
+	}
+
+	return &inferencev1.HeartbeatResponse{}, nil
+}
