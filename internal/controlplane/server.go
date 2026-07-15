@@ -98,3 +98,22 @@ func (s *Server) Heartbeat(
 
 	return &inferencev1.HeartbeatResponse{}, nil
 }
+
+func (s *Server) Deregister(
+	ctx context.Context,
+	req *inferencev1.DeregisterRequest,
+) (*inferencev1.DeregisterResponse, error) {
+	// Deregister asserts a final state ("worker absent"), not a transition, so
+	// it is idempotent: deregistering an unknown worker is a success, not a
+	// NotFound. Unlike Heartbeat — where a missing worker signals divergence and
+	// must return NotFound to trigger self-heal re-registration — a worker
+	// calling Deregister is on its way out and has nothing to reconcile.
+	if existed := s.reg.Deregister(req.GetWorkerId()); !existed {
+		// No-op deregister. Fine — the desired end state already holds.
+		// Logged at debug level only; a spike here (e.g. deregister_noop_total)
+		// would hint at duplicate delivery or a confused caller. Not an error.
+		log.Printf("deregister: worker %q already absent (no-op)", req.GetWorkerId())
+	}
+
+	return &inferencev1.DeregisterResponse{}, nil
+}

@@ -74,11 +74,18 @@ func (r *WorkerRegistry) Register(id, addr string, capacity uint32) {
 
 // Deregister removes a worker. M2's failure detector calls this
 // when a worker is judged DEAD; M1 just has it for symmetry.
-func (r *WorkerRegistry) Deregister(id string) {
+//
+// Returns whether the worker existed. existed == false is a normal idempotent
+// outcome (the desired end state — "worker absent" — already holds), NOT an
+// error: callers must not translate it into NotFound.
+func (r *WorkerRegistry) Deregister(id string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	_, existed := r.workers[id]
 	delete(r.workers, id)
+
+	return existed
 }
 
 // Heartbeat records a worker's periodic liveness signal: it updates the

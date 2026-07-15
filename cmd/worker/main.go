@@ -21,6 +21,7 @@ import (
 const (
 	controlPlaneAddr = "localhost:50051"
 	workerCapacity   = 10
+	shutdownTimeout = 3 * time.Second
 )
 
 func main() {
@@ -81,7 +82,26 @@ func heartbeatLoop(ctx context.Context, wg *sync.WaitGroup,
 	for {
 		select {
 		case <-ctx.Done():
+			
 			log.Printf("heartbeat loop: shutting down")
+
+			// Cleanup must run on a FRESH context: the loop's ctx is already
+			// cancelled, and gRPC refuses to send on a cancelled context
+			// (it returns codes.Canceled before a single byte goes out).
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancel()
+
+			// Deregister first, so that once draining exists it drains into a
+			// closed door (control plane already told to stop routing here).
+			// Fire once; on failure just log — the failure detector will evict us.
+			// Retrying would race the SIGKILL deadline for no correctness gain.
+			if _, err := client.Deregister(shutdownCtx, &inferencev1.DeregisterRequest{
+				WorkerId: id,
+			}); err != nil {
+				log.Printf("deregister failed (failure detector will evict): %v", err)
+			}
+
+			// (future: stop accepting new requests, then drain in-flight here)
 			return
 
 		case <-ticker.C:
