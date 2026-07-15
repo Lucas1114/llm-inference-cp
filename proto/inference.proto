@@ -74,6 +74,12 @@ message WorkerInfo {
   string address = 2;
 }
 
+message DeregisterRequest {
+  string worker_id = 1;
+}
+
+message DeregisterResponse {}
+
 message ListWorkersRequest {}
 
 message ListWorkersResponse {
@@ -89,4 +95,5 @@ service ControlPlane {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
   rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse);
+  rpc Deregister(DeregisterRequest) returns (DeregisterResponse);
 }

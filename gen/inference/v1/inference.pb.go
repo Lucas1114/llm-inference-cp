@@ -441,6 +441,86 @@ func (x *WorkerInfo) GetAddress() string {
 	return ""
 }
 
+type DeregisterRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId      string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeregisterRequest) Reset() {
+	*x = DeregisterRequest{}
+	mi := &file_proto_inference_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeregisterRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeregisterRequest) ProtoMessage() {}
+
+func (x *DeregisterRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_inference_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeregisterRequest.ProtoReflect.Descriptor instead.
+func (*DeregisterRequest) Descriptor() ([]byte, []int) {
+	return file_proto_inference_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *DeregisterRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+type DeregisterResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeregisterResponse) Reset() {
+	*x = DeregisterResponse{}
+	mi := &file_proto_inference_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeregisterResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeregisterResponse) ProtoMessage() {}
+
+func (x *DeregisterResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_inference_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeregisterResponse.ProtoReflect.Descriptor instead.
+func (*DeregisterResponse) Descriptor() ([]byte, []int) {
+	return file_proto_inference_proto_rawDescGZIP(), []int{9}
+}
+
 type ListWorkersRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -449,7 +529,7 @@ type ListWorkersRequest struct {
 
 func (x *ListWorkersRequest) Reset() {
 	*x = ListWorkersRequest{}
-	mi := &file_proto_inference_proto_msgTypes[8]
+	mi := &file_proto_inference_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -461,7 +541,7 @@ func (x *ListWorkersRequest) String() string {
 func (*ListWorkersRequest) ProtoMessage() {}
 
 func (x *ListWorkersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_inference_proto_msgTypes[8]
+	mi := &file_proto_inference_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -474,7 +554,7 @@ func (x *ListWorkersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWorkersRequest.ProtoReflect.Descriptor instead.
 func (*ListWorkersRequest) Descriptor() ([]byte, []int) {
-	return file_proto_inference_proto_rawDescGZIP(), []int{8}
+	return file_proto_inference_proto_rawDescGZIP(), []int{10}
 }
 
 type ListWorkersResponse struct {
@@ -486,7 +566,7 @@ type ListWorkersResponse struct {
 
 func (x *ListWorkersResponse) Reset() {
 	*x = ListWorkersResponse{}
-	mi := &file_proto_inference_proto_msgTypes[9]
+	mi := &file_proto_inference_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -498,7 +578,7 @@ func (x *ListWorkersResponse) String() string {
 func (*ListWorkersResponse) ProtoMessage() {}
 
 func (x *ListWorkersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_inference_proto_msgTypes[9]
+	mi := &file_proto_inference_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -511,7 +591,7 @@ func (x *ListWorkersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWorkersResponse.ProtoReflect.Descriptor instead.
 func (*ListWorkersResponse) Descriptor() ([]byte, []int) {
-	return file_proto_inference_proto_rawDescGZIP(), []int{9}
+	return file_proto_inference_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ListWorkersResponse) GetWorkers() []*WorkerInfo {
@@ -553,16 +633,21 @@ const file_proto_inference_proto_rawDesc = "" +
 	"\n" +
 	"WorkerInfo\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x18\n" +
-	"\aaddress\x18\x02 \x01(\tR\aaddress\"\x14\n" +
+	"\aaddress\x18\x02 \x01(\tR\aaddress\"0\n" +
+	"\x11DeregisterRequest\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\"\x14\n" +
+	"\x12DeregisterResponse\"\x14\n" +
 	"\x12ListWorkersRequest\"I\n" +
 	"\x13ListWorkersResponse\x122\n" +
 	"\aworkers\x18\x01 \x03(\v2\x18.inference.v1.WorkerInfoR\aworkers2_\n" +
 	"\x10InferenceService\x12K\n" +
-	"\bGenerate\x12\x1e.inference.v1.InferenceRequest\x1a\x1f.inference.v1.InferenceResponse2\xfb\x01\n" +
+	"\bGenerate\x12\x1e.inference.v1.InferenceRequest\x1a\x1f.inference.v1.InferenceResponse2\xcc\x02\n" +
 	"\fControlPlane\x12I\n" +
 	"\bRegister\x12\x1d.inference.v1.RegisterRequest\x1a\x1e.inference.v1.RegisterResponse\x12L\n" +
 	"\tHeartbeat\x12\x1e.inference.v1.HeartbeatRequest\x1a\x1f.inference.v1.HeartbeatResponse\x12R\n" +
-	"\vListWorkers\x12 .inference.v1.ListWorkersRequest\x1a!.inference.v1.ListWorkersResponseBDZBgithub.com/lucas1114/llm-inference-cp/gen/inference/v1;inferencev1b\x06proto3"
+	"\vListWorkers\x12 .inference.v1.ListWorkersRequest\x1a!.inference.v1.ListWorkersResponse\x12O\n" +
+	"\n" +
+	"Deregister\x12\x1f.inference.v1.DeregisterRequest\x1a .inference.v1.DeregisterResponseBDZBgithub.com/lucas1114/llm-inference-cp/gen/inference/v1;inferencev1b\x06proto3"
 
 var (
 	file_proto_inference_proto_rawDescOnce sync.Once
@@ -576,7 +661,7 @@ func file_proto_inference_proto_rawDescGZIP() []byte {
 	return file_proto_inference_proto_rawDescData
 }
 
-var file_proto_inference_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_proto_inference_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_proto_inference_proto_goTypes = []any{
 	(*InferenceRequest)(nil),    // 0: inference.v1.InferenceRequest
 	(*InferenceResponse)(nil),   // 1: inference.v1.InferenceResponse
@@ -586,25 +671,29 @@ var file_proto_inference_proto_goTypes = []any{
 	(*HeartbeatRequest)(nil),    // 5: inference.v1.HeartbeatRequest
 	(*HeartbeatResponse)(nil),   // 6: inference.v1.HeartbeatResponse
 	(*WorkerInfo)(nil),          // 7: inference.v1.WorkerInfo
-	(*ListWorkersRequest)(nil),  // 8: inference.v1.ListWorkersRequest
-	(*ListWorkersResponse)(nil), // 9: inference.v1.ListWorkersResponse
+	(*DeregisterRequest)(nil),   // 8: inference.v1.DeregisterRequest
+	(*DeregisterResponse)(nil),  // 9: inference.v1.DeregisterResponse
+	(*ListWorkersRequest)(nil),  // 10: inference.v1.ListWorkersRequest
+	(*ListWorkersResponse)(nil), // 11: inference.v1.ListWorkersResponse
 }
 var file_proto_inference_proto_depIdxs = []int32{
-	2, // 0: inference.v1.HeartbeatRequest.load:type_name -> inference.v1.WorkerLoad
-	7, // 1: inference.v1.ListWorkersResponse.workers:type_name -> inference.v1.WorkerInfo
-	0, // 2: inference.v1.InferenceService.Generate:input_type -> inference.v1.InferenceRequest
-	3, // 3: inference.v1.ControlPlane.Register:input_type -> inference.v1.RegisterRequest
-	5, // 4: inference.v1.ControlPlane.Heartbeat:input_type -> inference.v1.HeartbeatRequest
-	8, // 5: inference.v1.ControlPlane.ListWorkers:input_type -> inference.v1.ListWorkersRequest
-	1, // 6: inference.v1.InferenceService.Generate:output_type -> inference.v1.InferenceResponse
-	4, // 7: inference.v1.ControlPlane.Register:output_type -> inference.v1.RegisterResponse
-	6, // 8: inference.v1.ControlPlane.Heartbeat:output_type -> inference.v1.HeartbeatResponse
-	9, // 9: inference.v1.ControlPlane.ListWorkers:output_type -> inference.v1.ListWorkersResponse
-	6, // [6:10] is the sub-list for method output_type
-	2, // [2:6] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	2,  // 0: inference.v1.HeartbeatRequest.load:type_name -> inference.v1.WorkerLoad
+	7,  // 1: inference.v1.ListWorkersResponse.workers:type_name -> inference.v1.WorkerInfo
+	0,  // 2: inference.v1.InferenceService.Generate:input_type -> inference.v1.InferenceRequest
+	3,  // 3: inference.v1.ControlPlane.Register:input_type -> inference.v1.RegisterRequest
+	5,  // 4: inference.v1.ControlPlane.Heartbeat:input_type -> inference.v1.HeartbeatRequest
+	10, // 5: inference.v1.ControlPlane.ListWorkers:input_type -> inference.v1.ListWorkersRequest
+	8,  // 6: inference.v1.ControlPlane.Deregister:input_type -> inference.v1.DeregisterRequest
+	1,  // 7: inference.v1.InferenceService.Generate:output_type -> inference.v1.InferenceResponse
+	4,  // 8: inference.v1.ControlPlane.Register:output_type -> inference.v1.RegisterResponse
+	6,  // 9: inference.v1.ControlPlane.Heartbeat:output_type -> inference.v1.HeartbeatResponse
+	11, // 10: inference.v1.ControlPlane.ListWorkers:output_type -> inference.v1.ListWorkersResponse
+	9,  // 11: inference.v1.ControlPlane.Deregister:output_type -> inference.v1.DeregisterResponse
+	7,  // [7:12] is the sub-list for method output_type
+	2,  // [2:7] is the sub-list for method input_type
+	2,  // [2:2] is the sub-list for extension type_name
+	2,  // [2:2] is the sub-list for extension extendee
+	0,  // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_proto_inference_proto_init() }
@@ -618,7 +707,7 @@ func file_proto_inference_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_inference_proto_rawDesc), len(file_proto_inference_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

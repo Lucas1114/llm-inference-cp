@@ -136,6 +136,7 @@ const (
 	ControlPlane_Register_FullMethodName    = "/inference.v1.ControlPlane/Register"
 	ControlPlane_Heartbeat_FullMethodName   = "/inference.v1.ControlPlane/Heartbeat"
 	ControlPlane_ListWorkers_FullMethodName = "/inference.v1.ControlPlane/ListWorkers"
+	ControlPlane_Deregister_FullMethodName  = "/inference.v1.ControlPlane/Deregister"
 )
 
 // ControlPlaneClient is the client API for ControlPlane service.
@@ -152,6 +153,7 @@ type ControlPlaneClient interface {
 	Register(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*RegisterResponse, error)
 	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
 	ListWorkers(ctx context.Context, in *ListWorkersRequest, opts ...grpc.CallOption) (*ListWorkersResponse, error)
+	Deregister(ctx context.Context, in *DeregisterRequest, opts ...grpc.CallOption) (*DeregisterResponse, error)
 }
 
 type controlPlaneClient struct {
@@ -192,6 +194,16 @@ func (c *controlPlaneClient) ListWorkers(ctx context.Context, in *ListWorkersReq
 	return out, nil
 }
 
+func (c *controlPlaneClient) Deregister(ctx context.Context, in *DeregisterRequest, opts ...grpc.CallOption) (*DeregisterResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeregisterResponse)
+	err := c.cc.Invoke(ctx, ControlPlane_Deregister_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ControlPlaneServer is the server API for ControlPlane service.
 // All implementations must embed UnimplementedControlPlaneServer
 // for forward compatibility.
@@ -206,6 +218,7 @@ type ControlPlaneServer interface {
 	Register(context.Context, *RegisterRequest) (*RegisterResponse, error)
 	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
 	ListWorkers(context.Context, *ListWorkersRequest) (*ListWorkersResponse, error)
+	Deregister(context.Context, *DeregisterRequest) (*DeregisterResponse, error)
 	mustEmbedUnimplementedControlPlaneServer()
 }
 
@@ -224,6 +237,9 @@ func (UnimplementedControlPlaneServer) Heartbeat(context.Context, *HeartbeatRequ
 }
 func (UnimplementedControlPlaneServer) ListWorkers(context.Context, *ListWorkersRequest) (*ListWorkersResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWorkers not implemented")
+}
+func (UnimplementedControlPlaneServer) Deregister(context.Context, *DeregisterRequest) (*DeregisterResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Deregister not implemented")
 }
 func (UnimplementedControlPlaneServer) mustEmbedUnimplementedControlPlaneServer() {}
 func (UnimplementedControlPlaneServer) testEmbeddedByValue()                      {}
@@ -300,6 +316,24 @@ func _ControlPlane_ListWorkers_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlPlane_Deregister_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeregisterRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlPlaneServer).Deregister(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlPlane_Deregister_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlPlaneServer).Deregister(ctx, req.(*DeregisterRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ControlPlane_ServiceDesc is the grpc.ServiceDesc for ControlPlane service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -318,6 +352,10 @@ var ControlPlane_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListWorkers",
 			Handler:    _ControlPlane_ListWorkers_Handler,
+		},
+		{
+			MethodName: "Deregister",
+			Handler:    _ControlPlane_Deregister_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
