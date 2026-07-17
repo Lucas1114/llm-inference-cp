@@ -5,10 +5,15 @@ import (
 	"time"
 )
 
-// WorkerState is the failure-detector's view of a worker.
-// M1 only ever uses StateAlive. M2's FailureDetector drives the
-// Suspect/Dead transitions. Defining it now keeps the registry's
-// shape stable so M2 mounts on without surgery.
+// WorkerState is the failure-detector's classification of a worker.
+//
+// The TYPE lives here so there is a single definition shared across the
+// codebase, but the authoritative STORAGE of a worker's state lives in the
+// detector package, NOT in WorkerInfo below. Rationale: the registry is a pure
+// FACT store (what workers reported); a worker's ALIVE/SUSPECT/DEAD state is an
+// OPINION the detector infers. Keeping the opinion out of the fact store means
+// the registry has ONE writer per concern and the detector's scanner is the
+// sole writer of state — no two-writers-one-lock coupling.
 type WorkerState int
 
 const (
@@ -54,9 +59,12 @@ func NewWorkerRegistry() *WorkerRegistry {
 // Register adds or updates a worker. M1 decision: upsert —
 // re-registering an existing ID overwrites it.
 //
-// TODO(M2): upsert silently resets failure-detection state. A
-// SUSPECT worker that re-registers — treat as revived, or keep
-// suspecting? Revisit when FailureDetector lands.
+// Register only writes FACTS (id/addr/capacity/last-seen); it does NOT touch
+// failure-detection state, which the detector owns. This dissolves the old
+// "does re-register revive a SUSPECT worker?" question: it doesn't, directly.
+// A re-registering worker refreshes LastSeen; the detector's next scan sees
+// the refreshed arrival, φ falls, and the scanner pulls the worker back to
+// ALIVE on its own. Revival is derived from the data flow, not forced here.
 func (r *WorkerRegistry) Register(id, addr string, capacity uint32) {
 	// TODO(M1): validate id/addr (non-empty, addr parseable).
 
@@ -66,7 +74,6 @@ func (r *WorkerRegistry) Register(id, addr string, capacity uint32) {
 	r.workers[id] = &WorkerInfo{
 		ID:       id,
 		Addr:     addr,
-		State:    StateAlive,
 		Capacity: capacity,
 		LastSeen: time.Now(),
 	}

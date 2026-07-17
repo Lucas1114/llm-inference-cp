@@ -9,7 +9,7 @@ import (
 func TestRegisterAndList(t *testing.T) {
 	r := NewWorkerRegistry()
 	r.Register("w1", "localhost:5001", 0)
-	r.Register("w2", "localhost:5002")
+	r.Register("w2", "localhost:5002", 0)
 
 	if got := r.ListWorkers(); len(got) != 2 {
 		t.Fatalf("want 2 workers, got %d", len(got))
@@ -20,7 +20,7 @@ func TestRegisterAndList(t *testing.T) {
 func TestRegisterUpsert(t *testing.T) {
 	r := NewWorkerRegistry()
 	r.Register("w1", "localhost:5001", 0)
-	r.Register("w1", "localhost:9999") // same id, new addr
+	r.Register("w1", "localhost:9999", 0) // same id, new addr
 
 	got := r.ListWorkers()
 	if len(got) != 1 {
@@ -47,7 +47,7 @@ func TestConcurrentAccess(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			id := fmt.Sprintf("w%d", i)
-			r.Register(id, "localhost:5000")
+			r.Register(id, "localhost:5000",0)
 			r.Heartbeat(id, float64(i)) // in-lock writer
 			_ = r.ListWorkers()          // snapshot reader
 		}(i)
