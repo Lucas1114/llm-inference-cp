@@ -34,8 +34,7 @@ const (
 // field, the copy becomes shallow and the aliasing problem is back.
 type WorkerInfo struct {
 	ID       string
-	Addr     string // host:port the router/data plane dials
-	State    WorkerState
+	Addr     string    // host:port the router/data plane dials
 	Capacity uint32    // max concurrent requests; set at Register, used by M4 admission control
 	Load     float64   // updated by heartbeats
 	LastSeen time.Time // stamped by Register AND by every heartbeat (server clock)
