@@ -42,8 +42,8 @@ alive and dials those workers directly.
 | **M4** | KV-cache-aware scheduling and backpressure | Planned |
 | **M5** | Fault-injection harness with correctness assertions | Planned |
 
-**M2 breakdown:** heartbeat pipeline ✅ · graceful deregister · phi-accrual
-detection · eviction + zero-loss rerouting · idempotent dedup
+**M2 breakdown:** heartbeat pipeline ✅ · graceful deregister ✅ · phi-accrual
+detection ✅ · eviction + zero-loss rerouting · idempotent dedup
 
 ## Design notes
 
@@ -75,6 +75,29 @@ bypassing its `ALIVE → SUSPECT → DEAD` state machine. Instead the worker wal
 back through the front door with an explicit `Register` call, reusing the same
 `worker_id`. Identity continuity is what makes this a resurrection rather than
 the arrival of a new worker.
+
+### Death is inferred from silence, on a clock
+
+A dead worker sends nothing — there is no callback to hang detection on. So the
+detector cannot be event-driven; it is a single scanner goroutine on a ticker
+that periodically asks, for every worker, "how long has it been silent, and how
+anomalous is that?"
+
+The answer is a [phi-accrual](https://doi.org/10.1109/RELDIS.2004.1353004) score
+rather than a fixed timeout. The detector models the distribution of past
+heartbeat inter-arrival gaps and outputs a continuous suspicion value
+φ = −log₁₀(P(a beat is later than the current silence)). φ is a normalized
+confidence, not a raw duration, so one threshold works across a fast LAN and a
+jittery WAN without hand-tuning: φ=1 ≈ 10% false-positive risk, φ=8 ≈ 1e-8. Two
+thresholds map the same curve onto the state machine — a low one for `SUSPECT`,
+a high one for `DEAD` — so a brief network wobble surfaces as `SUSPECT` and
+recovers if beats resume, while a real crash rides φ past `DEAD` in a couple of
+scans.
+
+State lives with the detector, not in the registry. The registry is a pure fact
+store (what workers reported); a worker's ALIVE/SUSPECT/DEAD classification is an
+opinion the detector infers. Keeping the opinion out of the fact store means each
+has a single writer and the two never share a lock.
 
 ### Self-heal demo
 
