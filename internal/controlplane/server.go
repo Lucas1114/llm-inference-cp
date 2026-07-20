@@ -53,11 +53,11 @@ func (s *Server) Register(
 // ListWorkers: the gateway polls this to learn who to route to.
 //
 // THE CONVERSION LAYER (your "domain model ≠ wire type" decision, made real):
-// the registry hands back rich domain WorkerInfo (State/Load/Capacity/...),
+// the registry hands back rich domain WorkerInfo (Load/Capacity/...),
 // but the gateway only needs id+address to route. We map down to the lean
 // wire type and expose nothing more. Two payoffs:
 //  1. A proto change doesn't ripple into core logic (decoupled contract).
-//  2. Internal signals (Load/State) don't leak to a caller that only routes.
+//  2. Internal signals (Load) don't leak to a caller that only routes.
 func (s *Server) ListWorkers(
 	ctx context.Context,
 	req *inferencev1.ListWorkersRequest,
