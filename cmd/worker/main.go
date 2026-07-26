@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -21,8 +22,55 @@ import (
 const (
 	controlPlaneAddr = "localhost:50051"
 	workerCapacity   = 10
-	shutdownTimeout = 3 * time.Second
+	shutdownTimeout  = 3 * time.Second
+
+	// mockInferenceDelay simulates time-in-flight so a request can be
+	// interrupted (by shutdown, or in 4b by a reroute racing the original).
+	// Fixed for 4a; 4b introduces asymmetry to demo misdetection.
+	mockInferenceDelay = 300 * time.Millisecond
 )
+
+// inferenceServer implements the worker side of InferenceService.Generate.
+// Unlike the gateway's Generate (which picks a worker and forwards), the
+// worker's Generate is where the actual (mock) inference happens.
+type inferenceServer struct {
+	inferencev1.UnimplementedInferenceServiceServer
+	workerID string
+}
+
+// Generate is the mock inference handler. It sleeps to simulate compute, then
+// echoes back a result tagged with this worker's id so first-wins on the
+// gateway side is observable (you can see WHICH attempt won).
+func (s *inferenceServer) Generate(
+	ctx context.Context, req *inferencev1.InferenceRequest,
+) (*inferencev1.InferenceResponse, error) {
+
+	log.Printf("Generate: start req=%s prompt=%q", req.GetRequestId(), req.GetPrompt())
+
+	// Simulate time-in-flight, but stay cancellable. A bare time.Sleep would
+	// block the full delay even after the caller cancels or the server starts
+	// GracefulStop — the handler must observe ctx.Done() to stop early.
+	// (This is the worker responding to ITS OWN shutdown / caller cancel — not
+	// the router cancelling a "dead" worker, which we deliberately never do.)
+	select {
+	case <-time.After(mockInferenceDelay):
+		// compute finished normally
+	case <-ctx.Done():
+		// caller cancelled or server shutting down: abandon this request.
+		log.Printf("Generate: cancelled req=%s: %v", req.GetRequestId(), ctx.Err())
+		return nil, status.FromContextError(ctx.Err()).Err()
+	}
+
+	output := "mock-output for: " + req.GetPrompt()
+
+	log.Printf("Generate: done  req=%s worker=%s", req.GetRequestId(), s.workerID)
+
+	return &inferencev1.InferenceResponse{
+		RequestId: req.GetRequestId(),
+		Output:    output,
+		WorkerId:  s.workerID, // observability + first-wins visibility
+	}, nil
+}
 
 func main() {
 	workerID := uuid.NewString()
@@ -39,8 +87,8 @@ func main() {
 
 	client := inferencev1.NewControlPlaneClient(conn)
 
-	// Long-lived context, cancelled on Ctrl-C / SIGTERM. This is the shutdown
-	// signal the heartbeat loop watches.
+	// Long-lived context, cancelled on Ctrl-C / SIGTERM. Shared shutdown signal
+	// for BOTH the heartbeat loop and the InferenceService server below.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
@@ -56,15 +104,54 @@ func main() {
 	log.Printf("registered ok. id=%s heartbeat every %dms",
 		workerID, resp.GetHeartbeatIntervalMs())
 
-	// The control plane is the source of truth for heartbeat cadence; convert
-	// its milliseconds into Go's duration type.
 	interval := time.Duration(resp.GetHeartbeatIntervalMs()) * time.Millisecond
 
+	// ── InferenceService server: the worker's inbound role. ──────────────
+	// The worker is now BOTH a client (outbound conn to the control plane,
+	// above) AND a server (inbound listener for the gateway's Generate calls).
+	// Two roles, one process, independent connections.
+	lis, err := net.Listen("tcp", workerAddr)
+	if err != nil {
+		log.Fatalf("failed to listen on %s: %v", workerAddr, err)
+	}
+
+	grpcServer := grpc.NewServer()
+	inferencev1.RegisterInferenceServiceServer(grpcServer, &inferenceServer{workerID: workerID})
+
 	var wg sync.WaitGroup
-	wg.Add(1) // must happen before `go`
+
+	// Goroutine 1: serve InferenceService in the background. Serve blocks until
+	// GracefulStop is called, so it can't run on the main goroutine.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		log.Printf("InferenceService listening on %s", workerAddr)
+		if err := grpcServer.Serve(lis); err != nil {
+			// Serve returns nil on GracefulStop; a non-nil error is a real
+			// listener failure. Cancel ctx so the rest of the process unwinds
+			// instead of hanging on a server that will never come up.
+			log.Printf("InferenceService Serve error: %v", err)
+			stop()
+		}
+	}()
+
+	// Goroutine 2: bridge ctx cancellation to GracefulStop. On shutdown, drain
+	// in-flight Generate calls (GracefulStop, not Stop) before the listener
+	// closes — same "don't kill requests in flight" philosophy as the control
+	// plane side.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-ctx.Done()
+		log.Printf("shutting down InferenceService")
+		grpcServer.GracefulStop()
+	}()
+
+	// Goroutine 3: heartbeat loop (unchanged).
+	wg.Add(1)
 	go heartbeatLoop(ctx, &wg, client, workerID, workerAddr, interval)
 
-	wg.Wait() // wait for the loop to exit cleanly before main returns
+	wg.Wait()
 	log.Printf("worker shut down cleanly")
 }
 
@@ -74,7 +161,7 @@ func main() {
 func heartbeatLoop(ctx context.Context, wg *sync.WaitGroup,
 	client inferencev1.ControlPlaneClient, id, addr string, interval time.Duration) {
 
-	defer wg.Done() // decrements no matter which path we exit through
+	defer wg.Done()
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -82,19 +169,11 @@ func heartbeatLoop(ctx context.Context, wg *sync.WaitGroup,
 	for {
 		select {
 		case <-ctx.Done():
-			
 			log.Printf("heartbeat loop: shutting down")
 
-			// Cleanup must run on a FRESH context: the loop's ctx is already
-			// cancelled, and gRPC refuses to send on a cancelled context
-			// (it returns codes.Canceled before a single byte goes out).
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 			defer cancel()
 
-			// Deregister first, so that once draining exists it drains into a
-			// closed door (control plane already told to stop routing here).
-			// Fire once; on failure just log — the failure detector will evict us.
-			// Retrying would race the SIGKILL deadline for no correctness gain.
 			if _, err := client.Deregister(shutdownCtx, &inferencev1.DeregisterRequest{
 				WorkerId: id,
 			}); err != nil {
@@ -107,7 +186,7 @@ func heartbeatLoop(ctx context.Context, wg *sync.WaitGroup,
 		case <-ticker.C:
 			_, err := client.Heartbeat(ctx, &inferencev1.HeartbeatRequest{
 				WorkerId: id,
-				Load:     &inferencev1.WorkerLoad{ActiveRequests: 0}, // no real serving yet
+				Load:     &inferencev1.WorkerLoad{ActiveRequests: 0}, // M4: reflect real in-flight count
 			})
 
 			switch status.Code(err) {
@@ -115,9 +194,6 @@ func heartbeatLoop(ctx context.Context, wg *sync.WaitGroup,
 				// healthy tick
 
 			case codes.NotFound:
-				// The control plane restarted and lost its registry. Re-register
-				// with the same id: identity continuity is what makes this a
-				// resurrection rather than a new worker.
 				log.Printf("heartbeat: not found, re-registering")
 				client.Register(ctx, &inferencev1.RegisterRequest{
 					WorkerId: id,
