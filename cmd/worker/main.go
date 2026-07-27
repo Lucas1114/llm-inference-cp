@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"net"
 	"os"
@@ -20,14 +21,8 @@ import (
 )
 
 const (
-	controlPlaneAddr = "localhost:50051"
-	workerCapacity   = 10
-	shutdownTimeout  = 3 * time.Second
-
-	// mockInferenceDelay simulates time-in-flight so a request can be
-	// interrupted (by shutdown, or in 4b by a reroute racing the original).
-	// Fixed for 4a; 4b introduces asymmetry to demo misdetection.
-	mockInferenceDelay = 300 * time.Millisecond
+	workerCapacity  = 10
+	shutdownTimeout = 3 * time.Second
 )
 
 // inferenceServer implements the worker side of InferenceService.Generate.
@@ -36,6 +31,11 @@ const (
 type inferenceServer struct {
 	inferencev1.UnimplementedInferenceServiceServer
 	workerID string
+
+	// delay simulates time-in-flight. Per-instance rather than a package
+	// constant so two workers in the same demo can be asymmetric — a slow
+	// worker is how we provoke the false-positive that reroute must survive.
+	delay time.Duration
 }
 
 // Generate is the mock inference handler. It sleeps to simulate compute, then
@@ -53,7 +53,7 @@ func (s *inferenceServer) Generate(
 	// (This is the worker responding to ITS OWN shutdown / caller cancel — not
 	// the router cancelling a "dead" worker, which we deliberately never do.)
 	select {
-	case <-time.After(mockInferenceDelay):
+	case <-time.After(s.delay):
 		// compute finished normally
 	case <-ctx.Done():
 		// caller cancelled or server shutting down: abandon this request.
@@ -73,11 +73,29 @@ func (s *inferenceServer) Generate(
 }
 
 func main() {
+
+	// Millisecond resolution: 4b's whole story is two attempts racing, and
+	// second-granularity timestamps can't show which one won.
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
+	// Flags, not env vars: this is a demo binary launched by hand, and flags
+	// self-document via -h. Every value here is per-process, which is exactly
+	// what lets us run several workers side by side.
+	var (
+		addrFlag = flag.String("addr", "localhost:60001",
+			"address this worker listens on and advertises to the control plane")
+		cpFlag = flag.String("cp", "localhost:50051",
+			"control plane address")
+		delayFlag = flag.Duration("delay", 300*time.Millisecond,
+			"simulated inference latency (e.g. 300ms, 2s)")
+	)
+	flag.Parse()
+
 	workerID := uuid.NewString()
-	workerAddr := "localhost:60001"
+	workerAddr := *addrFlag
 
 	conn, err := grpc.NewClient(
-		controlPlaneAddr,
+		*cpFlag,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
@@ -101,8 +119,8 @@ func main() {
 		log.Fatalf("initial Register failed: %v", err) // startup failure: fail fast
 	}
 
-	log.Printf("registered ok. id=%s heartbeat every %dms",
-		workerID, resp.GetHeartbeatIntervalMs())
+	log.Printf("registered ok. id=%s addr=%s delay=%s heartbeat every %dms",
+		workerID, workerAddr, *delayFlag, resp.GetHeartbeatIntervalMs())
 
 	interval := time.Duration(resp.GetHeartbeatIntervalMs()) * time.Millisecond
 
@@ -116,7 +134,7 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer()
-	inferencev1.RegisterInferenceServiceServer(grpcServer, &inferenceServer{workerID: workerID})
+	inferencev1.RegisterInferenceServiceServer(grpcServer, &inferenceServer{workerID: workerID, delay: *delayFlag})
 
 	var wg sync.WaitGroup
 
