@@ -12,6 +12,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/reflection"
 
 	"github.com/lucas1114/llm-inference-cp/internal/gateway"
 
@@ -25,6 +26,11 @@ const (
 )
 
 func main() {
+
+	// Millisecond resolution: 4b's whole story is two attempts racing, and
+	// second-granularity timestamps can't show which one won.
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	
 	// Outbound: gateway is a ControlPlane client (to poll ListWorkers).
 	conn, err := grpc.NewClient(
 		controlPlaneAddr,
@@ -51,6 +57,11 @@ func main() {
 
 	grpcServer := grpc.NewServer()
 	inferencev1.RegisterInferenceServiceServer(grpcServer, gw)
+
+	// Reflection lets grpcurl discover the service without -proto flags.
+	// Dev convenience only — a production gateway would leave this off
+	// (it advertises the full API surface to anyone who can reach the port).
+	reflection.Register(grpcServer)
 
 	var wg sync.WaitGroup
 

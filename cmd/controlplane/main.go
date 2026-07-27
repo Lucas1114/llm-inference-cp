@@ -22,6 +22,11 @@ import (
 const listenAddr = ":50051"
 
 func main() {
+
+	// Millisecond resolution: 4b's whole story is two attempts racing, and
+	// second-granularity timestamps can't show which one won.
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
 	lis, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		log.Fatalf("failed to listen on %s: %v", listenAddr, err)
