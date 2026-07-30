@@ -44,14 +44,26 @@ type Gateway struct {
 
 	// tracker: every request currently in flight. Owns its own lock.
 	tracker *RequestTracker
+
+	// dispatch performs one worker RPC. A field rather than a direct call so
+	// tests can replace the network with a fake and drive the failure paths
+	// deterministically — killing four workers inside one poll cycle is a
+	// slice literal here and six terminal windows otherwise.
+	dispatch func(
+		ctx context.Context,
+		target *inferencev1.WorkerInfo,
+		req *inferencev1.InferenceRequest,
+	) (*inferencev1.InferenceResponse, error)
 }
 
 func New(cpClient inferencev1.ControlPlaneClient) *Gateway {
-	return &Gateway{
+	g := &Gateway{
 		cpClient: cpClient,
 		conns:    make(map[string]*grpc.ClientConn),
 		tracker:  NewRequestTracker(),
 	}
+	g.dispatch = g.dispatchRPC
+	return g
 }
 
 // PollLoop refreshes the local worker view until ctx is cancelled. Pull model:
@@ -317,15 +329,14 @@ func (g *Gateway) Generate(
 
 // attempt performs one RPC to one worker and feeds the outcome into the
 // adjudication channel.
+// attempt runs one dispatch to one worker and routes the outcome.
+//
+// The RPC goes through g.dispatch, the single seam where this package touches
+// the network. Everything above it — the retry budget, the tried set, the
+// adjudication latch, the chained reroute — is exercised in tests with that
+// seam replaced by a fake. Below it there is nothing to test but gRPC itself.
 func (g *Gateway) attempt(ih *inflight, target *inferencev1.WorkerInfo) {
 	workerID := target.GetWorkerId()
-
-	conn, err := g.connFor(target.GetAddress())
-	if err != nil {
-		g.attemptFailed(ih, err, workerID)
-		return
-	}
-	client := inferencev1.NewInferenceServiceClient(conn)
 
 	// A per-attempt context detached from the client's, deliberately.
 	//
@@ -339,13 +350,27 @@ func (g *Gateway) attempt(ih *inflight, target *inferencev1.WorkerInfo) {
 	ctx, cancel := context.WithTimeout(context.Background(), attemptTimeout)
 	defer cancel()
 
-	resp, err := client.Generate(ctx, ih.req)
+	resp, err := g.dispatch(ctx, target, ih.req)
 	if err != nil {
 		g.attemptFailed(ih, err, workerID)
 		return
 	}
 
 	ih.settle(attemptResult{resp: resp, workerID: workerID})
+}
+
+// dispatchRPC is the production dispatch: cached connection, real gRPC call.
+func (g *Gateway) dispatchRPC(
+	ctx context.Context,
+	target *inferencev1.WorkerInfo,
+	req *inferencev1.InferenceRequest,
+) (*inferencev1.InferenceResponse, error) {
+
+	conn, err := g.connFor(target.GetAddress())
+	if err != nil {
+		return nil, err
+	}
+	return inferencev1.NewInferenceServiceClient(conn).Generate(ctx, req)
 }
 
 // attemptFailed handles one attempt's failure: decide whether another worker

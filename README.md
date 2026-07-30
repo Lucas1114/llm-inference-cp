@@ -1,4 +1,5 @@
 # llm-inference-cp
+[![CI](https://github.com/lucas1114/llm-inference-cp/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas1114/llm-inference-cp/actions/workflows/ci.yml)
 
 A distributed control plane for LLM inference serving, written in Go.
 
