@@ -364,36 +364,72 @@ func (g *Gateway) attemptFailed(ih *inflight, err error, workerID string) {
 	// the view lock, and nesting the two establishes a lock order that some
 	// later code path will violate in the other direction. Two locks that
 	// never nest cannot invert.
+	//
+	// What comes back is a SUPERSET — it excludes only the worker that just
+	// failed, because tried lives under the tracker lock and cannot be read
+	// here. The set is narrowed below, inside the critical section. Splitting
+	// the work this way follows the rule that keeps these two locks apart:
+	// anything that ACQUIRES a lock stays outside, pure computation may go
+	// inside. Filtering a slice touches neither the network nor a second lock,
+	// so it is safe in there.
 	candidates := g.healthyExcept(map[string]bool{workerID: true})
 
 	var replacement *inferencev1.WorkerInfo
 	var exhausted bool
+	var dispatched int
 
 	g.tracker.mu.Lock()
 	ih.attempts-- // this attempt is over
 
-	if len(candidates) > 0 {
-		// Random, not candidates[0]: a worker dying with N requests on it
-		// would otherwise dump all N onto the same survivor, converting one
-		// failure into a load spike on a node already absorbing extra work.
-		replacement = candidates[rand.Intn(len(candidates))]
+	// Record the failure before filtering, or this round's candidate set would
+	// still contain the worker we just proved unreachable. healthyExcept's
+	// exclude argument also covers it, and the overlap is deliberate: exclude
+	// guards this attempt, tried guards every attempt after it.
+	ih.tried[workerID] = true
 
-		// Reassignment under the lock IS the claim — after this, a poll diff
-		// can no longer see the request as stranded and rescue it a second
-		// time.
-		ih.assigned = replacement.GetWorkerId()
-		ih.attempts++
+	// The budget gates ONE decision — whether to send a replacement — and
+	// nothing downstream of it. Exhausting the budget must not settle the
+	// request here: a frozen worker's attempt may still be computing and may
+	// still win. "Stop dispatching" and "this request is over" are different
+	// claims, and only attempts reaching zero supports the second one.
+	if ih.dispatched < maxAttempts {
+		eligible := make([]*inferencev1.WorkerInfo, 0, len(candidates))
+		for _, c := range candidates {
+			if !ih.tried[c.GetWorkerId()] {
+				eligible = append(eligible, c)
+			}
+		}
+
+		if len(eligible) > 0 {
+			// Random, not eligible[0]: a worker dying with N requests on it
+			// would otherwise dump all N onto the same survivor, converting
+			// one failure into a load spike on a node already absorbing extra
+			// work.
+			replacement = eligible[rand.Intn(len(eligible))]
+
+			// Reassignment under the lock IS the claim — after this, a poll
+			// diff can no longer see the request as stranded and rescue it a
+			// second time.
+			ih.assigned = replacement.GetWorkerId()
+			ih.attempts++
+			ih.dispatched++
+		}
 	}
 
-	// Read the counter while still holding the lock; act on it outside.
+	// Read both counters while still holding the lock; act on them outside.
+	// dispatched is copied for the same reason exhausted is: settle runs after
+	// the unlock, and reading ih.dispatched there would be a data race on a
+	// mutex-guarded field.
 	exhausted = ih.attempts == 0
+	dispatched = ih.dispatched
 	g.tracker.mu.Unlock()
 
 	if replacement != nil {
 		// Synchronous, not `go`: this function already runs on the failed
 		// attempt's goroutine, so continuing on it keeps the attempt count and
 		// the goroutine count in step. Chained failures recurse into a single
-		// sequential chain instead of fanning out.
+		// sequential chain instead of fanning out — and the recursion is now
+		// bounded by maxAttempts, so its depth is a constant.
 		g.attempt(ih, replacement)
 		return
 	}
@@ -402,7 +438,16 @@ func (g *Gateway) attemptFailed(ih *inflight, err error, workerID string) {
 		// Nobody is left to answer. Only now may an error become the client's
 		// result — settling unconditionally above would let every fast failure
 		// beat a slower success and silently disable rerouting altogether.
-		ih.settle(attemptResult{err: err, workerID: workerID})
+		//
+		// Unavailable, not the raw transport error: the client would read a
+		// bare "connection refused" as its own network problem. Unavailable
+		// says the cluster could not serve this and a later retry may work —
+		// the request itself is not at fault.
+		ih.settle(attemptResult{
+			err: status.Errorf(codes.Unavailable,
+				"exhausted %d attempts, last error: %v", dispatched, err),
+			workerID: workerID,
+		})
 	}
 }
 

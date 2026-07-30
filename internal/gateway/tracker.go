@@ -11,6 +11,21 @@ import (
 	inferencev1 "github.com/lucas1114/llm-inference-cp/gen/inference/v1"
 )
 
+// maxAttempts caps how many times ONE request may be dispatched, counting the
+// original. It is a correctness bound, not a tuning knob: without it the retry
+// path has no internal termination condition at all, and what actually stops it
+// is the failure detector evicting the dead workers from the view — an
+// unrelated component, on a ~2s timescale. Measured cost of that accident:
+// 86,351 dispatches for a single request when two workers died together.
+//
+// Deliberately per-request. A per-request budget still amplifies total load
+// during a correlated failure (every request on every dead worker retries at
+// once); bounding that properly needs a CLUSTER-level retry budget — retry
+// traffic capped as a fraction of total traffic, the approach gRPC's retry
+// policy and the SRE Book both take. That belongs with M4 backpressure, where
+// there is an admission controller to hang it on.
+const maxAttempts = 3
+
 // attemptResult is what one attempt (one RPC to one worker) produces.
 // Exactly one of resp/err is set. workerID identifies who produced it, which
 // is what makes first-wins observable in the logs.
@@ -24,13 +39,12 @@ type attemptResult struct {
 // request: the handler goroutine (waits for a result), one or more attempt
 // goroutines (produce results), and the reroute path (reassigns).
 //
-// Four fields, four different synchronisation strategies — that split is the
-// design, not an accident:
+// Fields fall into three synchronisation classes — that split is the design,
+// not an accident:
 //
-//	req      immutable after registration → no synchronisation needed at all
-//	assigned mutable → guarded by RequestTracker.mu
-//	attempts mutable → guarded by RequestTracker.mu (same lock, same access pattern)
-//	result   immutable field, mutable contents → the channel synchronises itself
+//	immutable                → req
+//	guarded by RequestTracker.mu → assigned, attempts, dispatched, tried
+//	self-synchronising       → claimed (atomic), result (channel)
 type inflight struct {
 	// req is the original request, kept so the reroute path (which has no
 	// access to the handler's call stack) can re-send it. It must be the SAME
@@ -58,6 +72,37 @@ type inflight struct {
 	// nobody is left to answer, which is the only moment an error is allowed
 	// to become the client's answer.
 	attempts int
+
+	// dispatched counts attempts EVER started for this request, across both
+	// failure paths, and is the value maxAttempts bounds.
+	//
+	// It exists because attempts cannot serve as the budget: attempts is a
+	// live gauge of what is in the air right now, so it rises on reroute and
+	// falls on failure and is never monotonic. In the two-workers-die case it
+	// sat at exactly 1 for all 86,351 iterations — a bound placed on it would
+	// never have fired once. A budget must be spent, not borrowed.
+	//
+	// Both paths draw on the same counter deliberately. What the budget
+	// protects is total cluster load during a failure, and the amplification
+	// does not care which path caused it. Splitting it into two budgets would
+	// require an argument for why the two thresholds differ, and there isn't
+	// one.
+	dispatched int
+
+	// tried records workers this request has PROVABLY failed on — a target
+	// that returned a real RPC error, never one the detector merely suspects.
+	//
+	// The distinction is load-bearing. A suspicion is revocable: a SIGSTOP'd
+	// worker resumes, re-registers under the same id, and rejoins the view.
+	// Blacklisting on a guess would permanently exclude a healthy node from
+	// one request's candidate set. Evidence gets you blacklisted; suspicion
+	// does not — the same principle as never cancelling a suspected worker.
+	//
+	// This is an efficiency measure, NOT the termination condition. The
+	// candidate set is live: during a rolling restart fresh workers keep
+	// entering the view and tried can never catch up with them. Only
+	// maxAttempts terminates. Guarded by RequestTracker.mu.
+	tried map[string]bool
 
 	// claimed is the actual token. It cannot be the channel's buffer slot:
 	// the handler's receive empties that slot, and a late loser would then
@@ -155,10 +200,12 @@ func (t *RequestTracker) register(
 	}
 
 	ih := &inflight{
-		req:      req,
-		assigned: workerID,
-		attempts: 1,
-		result:   make(chan attemptResult, 1),
+		req:        req,
+		assigned:   workerID,
+		attempts:   1,
+		dispatched: 1, // the first dispatch spends budget too
+		tried:      make(map[string]bool),
+		result:     make(chan attemptResult, 1),
 	}
 	t.requests[id] = ih
 	return ih, nil
