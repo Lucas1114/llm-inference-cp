@@ -166,6 +166,7 @@ func (g *Gateway) rerouteFrom(departed map[string]bool) {
 		target *inferencev1.WorkerInfo
 	}
 	var jobs []job
+	var overBudget []string
 
 	// Phase 2.
 	g.tracker.mu.Lock()
@@ -173,6 +174,20 @@ func (g *Gateway) rerouteFrom(departed map[string]bool) {
 		if !departed[ih.assigned] {
 			continue
 		}
+
+		// The budget is shared with the fast path, and this is where the slow
+		// path spends from it.
+		//
+		// Skipping leaves the request assigned to the departed worker and puts
+		// nothing new in the air. That is not the same as giving up on it: the
+		// attempt already running still settles on its own, by returning or by
+		// hitting attemptTimeout. Only attempts reaching zero ends a request,
+		// and that decision stays in attemptFailed.
+		if ih.dispatched >= maxAttempts {
+			overBudget = append(overBudget, reqID)
+			continue
+		}
+
 		target := healthy[rand.Intn(len(healthy))]
 
 		// Reassignment IS the claim. Doing it here, under the lock, means a
@@ -185,11 +200,17 @@ func (g *Gateway) rerouteFrom(departed map[string]bool) {
 		// alive and computing. That is the definition of the slow path.
 		ih.attempts++
 
+		// Monotonic, unlike attempts — this is the spend maxAttempts caps.
+		ih.dispatched++
+
 		jobs = append(jobs, job{reqID: reqID, ih: ih, target: target})
 	}
 	g.tracker.mu.Unlock()
 
 	// Phase 3.
+	for _, reqID := range overBudget {
+		log.Printf("gateway: reroute skipped req=%s, retry budget exhausted", reqID)
+	}
 	for _, j := range jobs {
 		log.Printf("gateway: rerouting req=%s to worker=%s addr=%s",
 			j.reqID, j.target.GetWorkerId(), j.target.GetAddress())
