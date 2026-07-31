@@ -287,3 +287,76 @@ func TestRegister_RejectsDuplicateRequestID(t *testing.T) {
 		t.Fatalf("got code %v, want AlreadyExists", status.Code(err))
 	}
 }
+
+// ── the SIGSTOP scenario, without SIGSTOP ────────────────────────────────
+
+// A frozen worker is the ONLY thing that produces a duplicate. It returns no
+// transport error, so the fast path never fires; the detector's verdict arrives
+// through the slow path while the original attempt is still computing, and for
+// a while two attempts hold the same request. Whichever lands first wins and
+// the other is discarded — at-least-once delivery plus idempotent adjudication
+// is what makes the client's view effectively-once.
+//
+// The demo for this needs SIGSTOP, two workers with asymmetric delays, and a
+// human racing a 10-second window. With the dispatch seam it is deterministic:
+// "frozen" is a goroutine parked on a channel.
+func TestReroute_FrozenAttemptLosesTheRace(t *testing.T) {
+	inFlight := make(chan struct{}) // closed once the first attempt is parked
+	release := make(chan struct{})  // closing it is SIGCONT
+
+	rec := &recorder{
+		respond: func(id string, callNo int) (*inferencev1.InferenceResponse, error) {
+			if callNo == 1 {
+				close(inFlight)
+				<-release // frozen mid-inference: no error, no return, no signal
+			}
+			return &inferencev1.InferenceResponse{RequestId: "r1", WorkerId: id}, nil
+		},
+	}
+	g := newTestGateway(rec, "w1", "w2")
+
+	ih, err := g.tracker.register(request("r1"), "w1")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	// Dispatch to w1 explicitly rather than through pickWorker: the scenario
+	// requires knowing which worker freezes, and leaving that to a uniform
+	// random choice is how an assertion passes without executing anything.
+	var frozen sync.WaitGroup
+	frozen.Add(1)
+	go func() {
+		defer frozen.Done()
+		g.attempt(ih, g.workers[0]) // w1
+	}()
+
+	<-inFlight // the request is now committed to a worker that will not answer
+
+	// The detector declares w1 dead and the poll diff reports it gone.
+	g.rerouteFrom(map[string]bool{"w1": true})
+
+	// The reroute answers while the original is still computing.
+	won := <-ih.result
+	if won.workerID != "w2" {
+		t.Fatalf("client was answered by %q; the reroute should have won", won.workerID)
+	}
+	if ih.attempts != 2 {
+		t.Fatalf("attempts = %d; both the frozen and the rerouted one should be live",
+			ih.attempts)
+	}
+
+	close(release) // SIGCONT: the frozen worker finishes and reports back
+	frozen.Wait()  // its settle has now run
+
+	// One request, two attempts, exactly one result. The loser must not deliver.
+	select {
+	case extra := <-ih.result:
+		t.Fatalf("a second result arrived from %q — the client would see it twice",
+			extra.workerID)
+	default:
+	}
+
+	if got := rec.count(); got != 2 {
+		t.Fatalf("dispatched %d times; want exactly two attempts", got)
+	}
+}
