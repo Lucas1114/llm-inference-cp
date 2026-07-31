@@ -25,7 +25,7 @@ route to; it never forwards a byte of inference traffic itself.
           ▼
    ┌───────────────┐   poll ListWorkers   ┌────────────────────┐
    │    gateway    │─────────────────────▶│   control plane    │
-   │  (stateless)  │                      │                    │
+   │  (1 replica)  │                      │                    │
    │               │                      │  registry          │
    │ RequestTracker│                      │  phi-accrual       │
    │  first-wins   │                      │  failure detector  │
@@ -63,6 +63,27 @@ targets. A watch stream becomes free once M3 introduces etcd.
 **M2 breakdown:** heartbeat pipeline ✅ · graceful deregister ✅ · phi-accrual
 detection ✅ · data-plane forwarding ✅ · zero-loss rerouting ✅ · first-wins
 deduplication ✅
+
+## Limitations
+
+Stated deliberately: each one bounds a claim made elsewhere in this README.
+
+- **One control plane instance.** No replication, no leader election. A restart
+  empties the registry; workers rebuild it by re-registering, which is a
+  recovery path rather than availability. HA is M3.
+- **One gateway replica.** First-wins adjudication lives in gateway process
+  memory and lasts exactly as long as the request. It deduplicates within one
+  process; several gateways would need shared state to adjudicate across
+  replicas. Effectively-once, as claimed above, is scoped to this topology.
+- **Workers are mocked.** Fixed 300ms, no side effects. That is precisely what
+  makes discarding a redundant *result* sufficient. Once a worker writes a KV
+  cache or debits a quota, idempotence has to move down to that layer; the
+  request id is carried through every reroute so that it can.
+- **Membership reaches the gateway by polling.** Slow-path reroute latency is
+  therefore bounded below by the poll interval, not by detection speed. The
+  fast path does better only because the transport reports the failure.
+- **No persistence and no transport security.** gRPC runs plaintext.
+- **Measured with one to four workers.** Nothing here is a claim about scale.
 
 ## Design notes
 
@@ -181,6 +202,7 @@ Which failure you inject decides which property you can demonstrate.
 | Gateway learns via | transport error, milliseconds      | poll diff, seconds             |
 | Old attempt        | provably finished                  | possibly still computing       |
 | Attempts in flight | one                                | two                            |
+| Concurrent compute | none                               | 6.6s, both attempts            |
 | Deduplication      | nothing to adjudicate              | decides the winner             |
 | Client sees        | one result, ~320ms                 | one result, ~3.5s              |
 
