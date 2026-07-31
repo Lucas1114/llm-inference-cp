@@ -207,16 +207,53 @@ Kill the control plane while the worker keeps running, then restart it. The
 worker survives, detects that it is no longer known, and re-registers itself —
 without ever exiting.
 
-<!-- paste the worker terminal output here -->
+Worker — nine failed beats, no exit, then `NotFound` triggers re-registration:
 
-<!-- paste the control plane terminal output here -->
+```
+2026/07/10 21:45:00 registered ok. id=4e4c4bab-5451-48bc-a426-98c2ea8ede22 heartbeat every 1000ms
+2026/07/10 21:45:08 heartbeat failed: rpc error: code = Unavailable desc = ... connect: connection refused
+                    ... seven more identical failures, one per tick ...
+2026/07/10 21:45:16 heartbeat failed: rpc error: code = Unavailable desc = ... connect: connection refused
+2026/07/10 21:45:17 heartbeat: not found, re-registering
+```
+
+Control plane after restart — same worker id, no manual intervention:
+
+```
+2026/07/10 21:45:15 control plane listening on :50051
+2026/07/10 21:45:17 registered worker id=4e4c4bab-5451-48bc-a426-98c2ea8ede22 addr=localhost:60001 capacity=10
+2026/07/10 21:45:18 heartbeat from 4e4c4bab-5451-48bc-a426-98c2ea8ede22 load=0
+```
+
+The id is identical on both sides. That is what makes this a resurrection
+rather than the arrival of a new worker — the registry entry is rebuilt for the
+same identity, and any in-flight bookkeeping keyed on that id stays valid.
 
 ### Eviction on crash
 
 `kill -9` a worker and watch φ climb from 0 to the cap within three scan ticks,
 about two seconds, after which the worker is evicted from the registry.
 
-<!-- paste the phi ramp excerpt here -->
+```
+10:37:29 SCAN worker=cf682942 state=0 phi=-0.00 count=54   # last healthy beat
+10:37:30 SCAN worker=cf682942 state=0 phi=0.00  count=54   # kill -9 here; silence begins
+10:37:30 SCAN worker=cf682942 state=0 phi=4.60  count=54   # ~1.2s silent: crosses PhiSuspect
+10:37:31 SCAN worker=cf682942 state=1 phi=20.00 count=54   # ~1.5s silent: caps, ALIVE->DEAD
+10:37:31 DETECTOR: worker cf682942-afec-4a3f-a80f-d26f04f2958d declared DEAD
+```
+
+`count` freezes at 54: silence is read as *no arrival*, never as an arrival
+with gap 0 — which would poison the inter-arrival distribution and suppress the
+score exactly when it is needed.
+
+The ramp is explosive because the distribution is tight. Fifty-four beats at
+~1s with sub-50ms jitter fit a very narrow normal, so the first sample past the
+mean is already deep in the tail. That is the adaptive payoff over a fixed
+timeout: a confident distribution declares death fast, with no hand-tuned
+deadline. A jittery worker would linger in SUSPECT instead, and recover if its
+beats resumed.
+
+The `SCAN` line was a temporary probe, removed after this run.
 
 ### Fast-path reroute, no duplication
 
@@ -224,7 +261,30 @@ about two seconds, after which the worker is evicted from the registry.
 the gateway reroutes, and the client is answered well before the detector even
 reaches its verdict. No dedup line appears — there is nothing to adjudicate.
 
-<!-- paste the gateway log from the kill -9 run here -->
+```
+23:11:43.914 gateway: attempt failed req=k1 worker=b55c3ddd: code = Unavailable desc = error reading from server: EOF
+23:11:43.934 worker A: Generate: start req=k1                  <- 20ms later, already recomputing
+23:11:44.235 gateway: req=k1 served by worker=9c4064e5
+23:11:45.182 control plane: DETECTOR: worker b55c3ddd declared DEAD   <- 947ms too late to matter
+23:11:45.333 gateway: 1 worker(s) left the view: [b55c3ddd]
+```
+
+Crash to answered client: **~320ms**. The failure detector reached its verdict
+a full second after the client already had its answer, and the poll diff that
+followed found nothing to reroute — the request had been unregistered.
+
+No dedup line appears anywhere. Same binary that logs one in the demo below;
+the difference is not the code but whether the failure was *observable*. A
+crash is reported by the transport itself, so the failed attempt is known-dead
+rather than suspected-dead, and replacing it is safe by construction.
+
+Note the ~1.7ms of orchestration this costs. Measured separately against
+unaffected requests in the same batch: 300ms of mock inference, 301.7ms
+observed — detecting the failure, picking a replacement, and re-dispatching
+fits in under two milliseconds. That figure is the *crash* number, though, not
+the failure number: it depends on the transport returning an error. A
+partitioned host sends no reset, so the dial hangs to the attempt timeout and
+only the slow path below can recover it.
 
 ### False positive, reroute, and first-wins deduplication
 
@@ -233,7 +293,37 @@ rerouted, and for several seconds two attempts compute the same request on two
 machines. On `SIGCONT` the original result arrives, loses the race, and is
 discarded — one client, one answer.
 
-<!-- paste the gateway log from the SIGSTOP run here -->
+```
+22:37:14.798 gateway: 1 worker(s) left the view: [8cc9badf]
+22:37:14.798 gateway: rerouting req=z1 to worker=b9601c1a addr=localhost:60001
+22:37:15.120 gateway: req=z1 served by worker=b9601c1a
+22:37:21.446 dedup: attempt from worker=8cc9badf lost the race req=z1
+```
+
+The client's response, six seconds before the loser reported in:
+
+```json
+{ "requestId": "z1", "output": "mock-output for: hi",
+  "workerId": "b9601c1a-0e7c-44f1-947b-3ad9c7b4138b" }
+```
+
+Two attempts computed the same request concurrently for **6.6 seconds**. One
+side effect. The frozen worker was healthy the whole time — on `SIGCONT` its
+heartbeat returned `NotFound` and it re-registered under the same id, which is
+self-heal and eviction composing without either knowing about the other.
+
+This is the scenario the whole design exists for, and it is the one that cannot
+be demonstrated by killing a process: a crashed worker is provably finished, so
+there is never a second attempt to adjudicate. Only a worker that is alive and
+silent produces one.
+
+The same sequence runs as a deterministic test —
+`TestReroute_FrozenAttemptLosesTheRace` in `internal/gateway/tracker_test.go`.
+The dispatch seam makes "frozen" a goroutine parked on a channel, so the race
+is reproduced with no signals, no sleeps, and no timing window. If the
+adjudication latch regresses, the second result arrives and the test fails; the
+first implementation of it used the channel buffer as the claim token and
+silently logged no dedup line at all.
 
 ## Running it
 
