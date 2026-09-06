@@ -202,9 +202,10 @@ Which failure you inject decides which property you can demonstrate.
 | Gateway learns via | transport error, milliseconds      | poll diff, seconds             |
 | Old attempt        | provably finished                  | possibly still computing       |
 | Attempts in flight | one                                | two                            |
-| Concurrent compute | none                               | 6.6s, both attempts            |
+| Both outstanding   | never                              | 6.6s                           |
 | Deduplication      | nothing to adjudicate              | decides the winner             |
-| Client sees        | one result, ~320ms                 | one result, ~3.5s              |
+| Client sees        | one result                         | one result                     |
+| Fault to answer    | ~320ms                             | ~3.5s                          |
 
 `kill -9` cannot produce a duplicate. The transport reports the death, so the
 failed attempt is known-dead rather than suspected-dead, and replacing it is
@@ -329,8 +330,16 @@ The client's response, six seconds before the loser reported in:
   "workerId": "b9601c1a-0e7c-44f1-947b-3ad9c7b4138b" }
 ```
 
-Two attempts computed the same request concurrently for **6.6 seconds**. One
-side effect. The frozen worker was healthy the whole time — on `SIGCONT` its
+Two attempts were outstanding on the same request for **6.6 seconds** — from
+the reroute at 14.798 to the loser reporting in at 21.446. They were not both
+computing: `SIGSTOP` stops the process being scheduled, so the frozen worker
+burned no CPU while the replacement did the work. What overlaps here is the
+*claim* on the request, not the computation — and the claim is what
+deduplication has to resolve. A genuinely slow worker, or a partitioned one,
+would overlap in compute as well; the adjudication path is identical either
+way, which is why freezing is a fair stand-in for it.
+
+One side effect. The frozen worker was healthy the whole time — on `SIGCONT` its
 heartbeat returned `NotFound` and it re-registered under the same id, which is
 self-heal and eviction composing without either knowing about the other.
 
