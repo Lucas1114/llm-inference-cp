@@ -7,7 +7,10 @@
 *.out
 /bin
 
-# Local scratch — experiment logs, raw notes. Never shipped.
+# Everything this project records: experiment logs, conversation handoffs,
+# interview material, the retrospective. One ignored path rather than several —
+# each extra top-level path to remember is another chance to forget one, and
+# that mistake only goes one way.
 notes/
 
 # Private working files — never enter the repository, never pushed.
@@ -18,7 +21,6 @@ notes/
 CLAUDE.md
 AGENTS.md
 PROJECT_RULES.md
-.handoffs/
 
 # Secrets — same reasoning, same unanchored form.
 .env
