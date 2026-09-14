@@ -3,19 +3,28 @@
 
 A distributed control plane for LLM inference serving, written in Go.
 
+![A worker is killed mid-request, then a healthy worker is frozen until the detector misjudges it. Every request still completes, and the late duplicate result is discarded.](docs/demo.gif)
+
+One command, two induced failures, on one machine: a worker died and a healthy
+one was misjudged dead. No request was lost, and where two attempts computed the
+same request, one result was discarded.
+
+```bash
+./scripts/demo.sh
+```
+
+Raw capture: [`docs/demo.cast`](docs/demo.cast) — the same run, unedited, with
+real timings. The GIF above is that capture with idle time compressed.
+
+Two acts, because they show different things. A crash is reported by the
+transport, so the failed attempt is known-dead and no second computation is ever
+started — act 1 discards nothing, and that is the correct outcome rather than a
+gap in the demo. Only a false positive puts two attempts on one request, so act
+2 is the act that exercises adjudication at all.
+
 The control plane owns cluster membership, failure detection, and routing
 decisions — and stays **out of the data path**. It tells the gateway _who_ to
 route to; it never forwards a byte of inference traffic itself.
-
-> **North star:** exactly-once is a property of the whole pipeline, never of any
-> single component. The honest answer is always
-> **at-least-once delivery + idempotent processing = effectively-once semantics.**
-> That principle recurs throughout this system: in failure detection, in
-> rerouting, and in request deduplication.
-
-> This is a personal portfolio project, built to explore distributed systems
-> depth rather than feature completeness. Workers are mocked; the inference
-> engine is not the point.
 
 ## Architecture
 
@@ -49,6 +58,31 @@ Membership reaches the gateway by polling rather than by subscription. The
 detector's verdicts are an in-process channel inside the control plane, and a
 poll diff carries them across the process boundary at the latency this system
 targets. A watch stream becomes free once M3 introduces etcd.
+
+## The same code, two failure modes
+
+Which failure you inject decides which property you can demonstrate.
+
+|                    | `kill -9`                          | `SIGSTOP`                      |
+| ------------------ | ---------------------------------- | ------------------------------ |
+| Worker             | dies; kernel resets the connection | freezes; connection stays open |
+| Gateway learns via | transport error, milliseconds      | poll diff, seconds             |
+| Old attempt        | provably finished                  | possibly still computing       |
+| Attempts in flight | one                                | two                            |
+| Deduplication      | nothing to adjudicate              | decides the winner             |
+| Client sees        | one result                         | one result                     |
+
+`kill -9` cannot produce a duplicate. The transport reports the death, so the
+failed attempt is known-dead rather than suspected-dead, and replacing it is
+safe by construction. This fast path buys latency, not correctness — the poll
+diff would have rerouted the same request roughly a second later, and in a
+measured run it arrived to find the tracker already empty.
+
+`SIGSTOP` is the interesting case: the worker is **healthy throughout**. The
+detector is simply wrong about it, both attempts run concurrently, and exactly
+one result reaches the client. That is the only condition under which
+deduplication has anything to adjudicate, and the only demo that proves it
+works.
 
 ## Status
 
@@ -84,8 +118,25 @@ Stated deliberately: each one bounds a claim made elsewhere in this README.
   fast path does better only because the transport reports the failure.
 - **No persistence and no transport security.** gRPC runs plaintext.
 - **Measured with one to four workers.** Nothing here is a claim about scale.
+- **No deployment layer.** No Helm chart, no manifests, no cloud provisioning.
+  This system is indistinguishable from any other API while it is healthy — its
+  behaviour exists only under failure, and a deployment demonstrates the healthy
+  state. It was also never just configuration: listen addresses are compile-time
+  constants (`cmd/controlplane/main.go:22`, `cmd/gateway/main.go:23-24`) and no
+  gRPC health service is registered, so a readiness probe would have meant
+  changing product code whose only consumer was a manifest.
 
 ## Design notes
+
+> **North star:** exactly-once is a property of the whole pipeline, never of any
+> single component. The honest answer is always
+> **at-least-once delivery + idempotent processing = effectively-once semantics.**
+> That principle recurs throughout this system: in failure detection, in
+> rerouting, and in request deduplication.
+
+> This is a personal portfolio project, built to explore distributed systems
+> depth rather than feature completeness. Workers are mocked; the inference
+> engine is not the point.
 
 ### Liveness is judged by the observer, not the observed
 
@@ -192,34 +243,7 @@ fast would otherwise beat every slower success and quietly disable rerouting
 altogether, so an error becomes the client's answer only once the in-flight
 attempt count reaches zero and nobody is left to respond.
 
-### The same code, two failure modes
-
-Which failure you inject decides which property you can demonstrate.
-
-|                    | `kill -9`                          | `SIGSTOP`                      |
-| ------------------ | ---------------------------------- | ------------------------------ |
-| Worker             | dies; kernel resets the connection | freezes; connection stays open |
-| Gateway learns via | transport error, milliseconds      | poll diff, seconds             |
-| Old attempt        | provably finished                  | possibly still computing       |
-| Attempts in flight | one                                | two                            |
-| Both outstanding   | never                              | 6.6s                           |
-| Deduplication      | nothing to adjudicate              | decides the winner             |
-| Client sees        | one result                         | one result                     |
-| Fault to answer    | ~320ms                             | ~3.5s                          |
-
-`kill -9` cannot produce a duplicate. The transport reports the death, so the
-failed attempt is known-dead rather than suspected-dead, and replacing it is
-safe by construction. This fast path buys latency, not correctness — the poll
-diff would have rerouted the same request roughly a second later, and in a
-measured run it arrived to find the tracker already empty.
-
-`SIGSTOP` is the interesting case: the worker is **healthy throughout**. The
-detector is simply wrong about it, both attempts run concurrently, and exactly
-one result reaches the client. That is the only condition under which
-deduplication has anything to adjudicate, and the only demo that proves it
-works.
-
-## Demos
+## Failure walkthroughs
 
 Each of these is reproducible from a clean checkout; see
 [Running it](#running-it).
@@ -292,9 +316,10 @@ reaches its verdict. No dedup line appears — there is nothing to adjudicate.
 23:11:45.333 gateway: 1 worker(s) left the view: [b55c3ddd]
 ```
 
-Crash to answered client: **~320ms**. The failure detector reached its verdict
-a full second after the client already had its answer, and the poll diff that
-followed found nothing to reroute — the request had been unregistered.
+Crash to answered client in that run: **~320ms**. The failure detector reached
+its verdict a full second after the client already had its answer, and the poll
+diff that followed found nothing to reroute — the request had been
+unregistered.
 
 No dedup line appears anywhere. Same binary that logs one in the demo below;
 the difference is not the code but whether the failure was *observable*. A
@@ -339,6 +364,10 @@ deduplication has to resolve. A genuinely slow worker, or a partitioned one,
 would overlap in compute as well; the adjudication path is identical either
 way, which is why freezing is a fair stand-in for it.
 
+Fault to answered client was **~3.5s** in that run — the slow path waits on a
+poll diff rather than on a transport error, so detection latency is inside the
+number.
+
 One side effect. The frozen worker was healthy the whole time — on `SIGCONT` its
 heartbeat returned `NotFound` and it re-registered under the same id, which is
 self-heal and eviction composing without either knowing about the other.
@@ -358,7 +387,28 @@ silently logged no dedup line at all.
 
 ## Running it
 
-Requires Go 1.26+ and [grpcurl](https://github.com/fullstorydev/grpcurl).
+Requires Go 1.26+. Nothing else — no container runtime, no cluster.
+
+### One command
+
+```bash
+./scripts/demo.sh
+```
+
+It builds the binaries, starts a control plane, three workers and a gateway on
+loopback, runs both acts against a batch of concurrent requests, and prints a
+verdict. Every wait inside it is a polled condition rather than a fixed sleep, so
+a loaded machine makes it slower, not flaky.
+
+Worker selection is uniform random, so which requests a failure catches differs
+every run. The script therefore asserts invariants — every request completed,
+every stranded request was re-dispatched and answered, duplicates discarded in
+act 2 — and never an exact count.
+
+### By hand
+
+[grpcurl](https://github.com/fullstorydev/grpcurl) is optional, and useful for
+poking at the cluster view directly.
 
 Build first. Do **not** use `go run` for the failure demos: it forks a child
 process, so signals land on the wrapper while the actual worker keeps
@@ -392,7 +442,7 @@ grpcurl -plaintext -d '{"request_id":"r1","prompt":"hi"}' \
   localhost:50052 inference.v1.InferenceService/Generate
 ```
 
-### Reproducing the deduplication demo
+### Reproducing the deduplication demo by hand
 
 Worker selection is uniform random, so send requests until one lands on the slow
 worker — it blocks for ten seconds, and that is the window. Freeze it
