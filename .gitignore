@@ -10,3 +10,16 @@
 # Local scratch — experiment logs, raw notes. Never shipped.
 notes/
 
+# Private working files — never enter the repository, never pushed.
+# Deliberately unanchored (no leading slash): the requirement is "never in the
+# repo", not "not in the root". An anchored rule would leak a copy placed in a
+# subdirectory. Over-ignoring costs nothing here; under-ignoring would publish
+# private decisions and job-search positioning to a repo meant for recruiters.
+CLAUDE.md
+AGENTS.md
+PROJECT_RULES.md
+.handoffs/
+
+# Secrets — same reasoning, same unanchored form.
+.env
+.env.*
