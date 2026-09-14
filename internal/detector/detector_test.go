@@ -188,6 +188,18 @@ func warmUp(t *testing.T, reg *registry.WorkerRegistry, d *Detector, id string) 
 	reg.Register(id, "localhost:1", 10)
 	d.scanOnce(time.Now()) // first sighting: born ALIVE, window empty
 
+	// The sleep is load-bearing, not a wait. registry.Heartbeat stamps LastSeen
+	// with its own clock (registry.go:117) — the test cannot inject it — and
+	// scanOnce folds an arrival into the window only on a STRICT After():
+	// w.LastSeen.After(e.lastApplied). Two beats issued back to back can carry
+	// the same instant, After() is then false, and no sample is pushed at all:
+	// warmUp would warm nothing and leave the window empty.
+	//
+	// This does not weaken the no-sleeps rule. The sleep produces distinguishable
+	// timestamps; it does not wait for an outcome. Nothing here asserts on its
+	// duration — 2ms and 20ms are equally valid — because every assertion in this
+	// file scores against an instant passed explicitly to phi(now) or scanOnce(now).
+	// There is no timing window to lose a race in.
 	for i := 0; i < 5; i++ {
 		time.Sleep(2 * time.Millisecond)
 		reg.Heartbeat(id, 0)
