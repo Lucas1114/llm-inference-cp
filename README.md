@@ -13,8 +13,10 @@ same request, one result was discarded.
 ./scripts/demo.sh
 ```
 
-Raw capture: [`docs/demo.cast`](docs/demo.cast) — the same run, unedited, with
-real timings. The GIF above is that capture with idle time compressed.
+Raw capture of that run, unedited: [watch it on
+asciinema](https://asciinema.org/a/1265378) for selectable text and real
+timings, or read [`docs/demo.cast`](docs/demo.cast), the same file in this
+repository. The GIF above is that capture with idle time compressed.
 
 Two acts, because they show different things. A crash is reported by the
 transport, so the failed attempt is known-dead and no second computation is ever
